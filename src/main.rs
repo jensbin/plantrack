@@ -84,6 +84,10 @@ enum Commands {
         /// Optional location for the event.
         #[arg(short, long)]
         location: Option<String>,
+
+        /// Optional to apply next minutes, default is past minutes.
+        #[arg(short, long)]
+        forward: bool,
     },
     /// List all scheduled events.
     List {
@@ -153,6 +157,10 @@ enum Commands {
     Delete {
         /// The ID of the event to delete.
         id: String,
+
+        /// Timespan in the format HH:MM-HH:MM to remove from the event.
+        #[arg(short, long)]
+        timespan: Option<String>,
     },
 }
 
@@ -830,6 +838,91 @@ fn is_slot_free(events: &[ScheduleEvent], start_time: DateTime<Utc>, end_time: D
     }
 }
 
+fn delete_event(events: &mut Vec<ScheduleEvent>, id: &str, timespan: Option<String>, rounding: u32, timezone: &Tz) -> Result<bool, Error> {
+    let event_index = events.iter().position(|event| event.id == id);
+
+    if let Some(index) = event_index {
+        if let Some(timespan_str) = timespan {
+            let (start_remove, end_remove) = parse_datetime_range(&timespan_str, None, rounding, timezone)?;
+
+            let original_event = events[index].clone();
+
+            if start_remove >= original_event.end_time || end_remove <= original_event.start_time {
+                println!("{}", "Specified timespan does not overlap with the event.".yellow());
+                return Ok(false); // No changes made
+            }
+
+
+            let mut modified_events = Vec::new();
+
+            if start_remove > original_event.start_time {
+                modified_events.push(ScheduleEvent {
+                    id: Uuid::new_v4().to_string(),
+                    start_time: original_event.start_time,
+                    end_time: start_remove,
+                    summary: original_event.summary.clone(),
+                    note: original_event.note.clone(),
+                    location: original_event.location.clone(),
+                    booked: original_event.booked,
+                });
+            }
+
+            if end_remove < original_event.end_time {
+                modified_events.push(ScheduleEvent {
+                    id: Uuid::new_v4().to_string(),
+                    start_time: end_remove,
+                    end_time: original_event.end_time,
+                    summary: original_event.summary.clone(),
+                    note: original_event.note.clone(),
+                    location: original_event.location.clone(),
+                    booked: original_event.booked,
+                });
+            }
+
+            print_event_diff(&[original_event], &modified_events);
+
+            let confirmed = Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt("Apply these changes?")
+                .interact();
+
+            if confirmed.is_err() || !confirmed.unwrap() {
+                println!("{}", "Changes not applied".yellow());
+                return Ok(false); // No changes made
+            }
+
+
+            events.remove(index);
+            events.extend(modified_events);
+            events.sort_by_key(|e| e.start_time);
+            merge_events(events);
+
+
+        } else {
+            let original_event = &events[index];
+
+            println!("{}", "Deleting the following event:".yellow().bold());
+            println!("- {}", format_event_for_diff(&original_event).red());
+
+            let confirmed = Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt("Delete this event?")
+                .interact();
+
+
+            if confirmed.is_err() || !confirmed.unwrap() {
+                println!("{}", "Event not deleted".yellow());
+                return Ok(false);
+            }
+
+            events.remove(index);
+
+        }
+        Ok(true) // Changes made
+    } else {
+        println!("Event with ID {} not found", id.green().bold());
+        Ok(false) // No changes made
+    }
+}
+
 fn main() -> Result<(), Error> {
     let args = Args::parse();
 
@@ -921,14 +1014,24 @@ fn main() -> Result<(), Error> {
             generate_ics(&ics_file_path, &events, export_notes)?;
             println!("{}", "Event added".green());
         }
-        Commands::Quickadd { project_task, minutes, note, location } => {
-            let now = Utc::now();
+        Commands::Quickadd { project_task, minutes, note, location, forward } => {
+            let now = Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap();
             let duration_minutes = minutes.unwrap_or(rounding);
 
-            let start_time = round_time_to_interval(now.naive_utc().time(), rounding, false);
-            let start_time = now.with_time(start_time).unwrap();
+            let (start_time, end_time) = if forward {
+                let start_time = round_time_to_interval(now.naive_utc().time(), rounding, false);
+                let start_time = now.with_time(start_time).unwrap();
 
-            let end_time = start_time + Duration::minutes(duration_minutes as i64);
+                let end_time = start_time + Duration::minutes(duration_minutes as i64);
+                (start_time, end_time)
+            } else {
+                let end_time = round_time_to_interval(now.naive_utc().time(), rounding, true);
+                let end_time = now.with_time(end_time).unwrap();
+
+                let start_time = end_time - Duration::minutes(duration_minutes as i64);
+                (start_time, end_time)
+            };
+
 
 
             let (project, task) = project_task
@@ -970,6 +1073,8 @@ fn main() -> Result<(), Error> {
             //         return Ok(()); // Exit early if the user cancels
             //     }
             // }
+            // split_overlapping_events(&mut events, event.clone());
+            // merge_events(&mut events);
 
             save_events(&schedule_file_path, &events)?;
             generate_ics(&ics_file_path, &events, export_notes)?;
@@ -977,11 +1082,11 @@ fn main() -> Result<(), Error> {
         }
         Commands::List { days, date } => list_events(&events, days, date, &timezone),
         // Commands::List { days } => list_events(&events, days),
-        Commands::Delete { id } => {
-            events.retain(|event| event.id != id);
-            save_events(&schedule_file_path, &events)?;
-            println!("Event with ID {} deleted", id.green().bold());
-            generate_ics(&ics_file_path, &events, export_notes)?;
+        Commands::Delete { id, timespan } => {
+            if delete_event(&mut events, &id, timespan, rounding, &timezone)? {
+                save_events(&schedule_file_path, &events)?;
+                generate_ics(&ics_file_path, &events, export_notes)?;
+            }
         }
         Commands::Report { project, month, year, target } => {
             generate_report(&events, &project, &timezone, month, year, target);
