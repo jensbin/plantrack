@@ -522,12 +522,6 @@ fn generate_ics(file_path: &PathBuf, events: &[ScheduleEvent], export_notes: boo
     Ok(())
 }
 
-fn format_duration(duration: Duration) -> String {
-    let hours = duration.num_hours();
-    let minutes = duration.num_minutes() % 60;
-    format!("{:02}:{:02}h", hours, minutes)
-}
-
 fn print_events_grouped_by_day(events: &[ScheduleEvent], timezone: &Tz, days: u32, date_str: Option<String>) {
     let now = if let Some(date_str) = date_str {
         match NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
@@ -572,7 +566,7 @@ fn print_events_grouped_by_day(events: &[ScheduleEvent], timezone: &Tz, days: u3
                     let free_time = start_time_local - last_et;
                     if free_time > Duration::zero() {
                         println!("                               {}", format!("⋮").bright_green());
-                        println!("                               {} {}", format_duration(free_time).bright_green(), "free".bright_green());
+                        println!("                               {} {}", format_duration(free_time, true).bright_green(), "free".bright_green());
                         println!("                               {}", format!("⋮").bright_green());
                     }
                 }
@@ -649,6 +643,17 @@ fn print_event(event: &ScheduleEvent, timezone: &Tz) {
     }
     if let Some(location) = &event.location {
         println!("                               {}", format!("↳ ⌂: {}", location).bright_blue());
+    }
+}
+
+fn format_duration(duration: Duration, human: bool) -> String {
+    if human {
+        let hours = duration.num_hours();
+        let minutes = duration.num_minutes() % 60;
+        format!("{:02}:{:02}h", hours, minutes)
+    } else {
+        let hours = duration.num_minutes() as f64 / 60.0;
+        format!("{:.2}", hours)
     }
 }
 
@@ -733,9 +738,10 @@ fn generate_report(events: &[ScheduleEvent], project: &str, timezone: &Tz, month
         sum_total_duration = sum_total_duration + total_duration;
 
         println!("{}", format!("Task: {}", task).green().bold());
-        println!("  {}", format!("Total Time: {}h {}m", total_duration.num_hours(), total_duration.num_minutes() % 60).bright_white());
+        println!("  {}", format!("Total Time: {}", format_duration(total_duration, false)).bright_white());
 
         for event in task_events {
+            let duration = event.end_time - event.start_time;
             let booked = if event.booked {
                 "[✔]".green()
             } else {
@@ -746,9 +752,10 @@ fn generate_report(events: &[ScheduleEvent], project: &str, timezone: &Tz, month
                 }
             };
             println!(
-                "    {} - {} {} {} ({})",
+                "    {} - {} ({}) {} {} ({})",
                 event.start_time.with_timezone(timezone).format("%Y-%m-%d %H:%M"),
                 event.end_time.with_timezone(timezone).format("%H:%M"),
+                format_duration(duration, false),
                 booked,
                 event.note.as_deref().unwrap_or_default(),
                 event.id.italic().dimmed(),
@@ -757,9 +764,9 @@ fn generate_report(events: &[ScheduleEvent], project: &str, timezone: &Tz, month
          println!();
     }
     println!("{}", "Summary".yellow().bold()); // Clearer section header
-    println!("  {}", format!("Total Time  : {}h {}m", sum_total_duration.num_hours(), sum_total_duration.num_minutes() % 60).bright_white().bold());
-    println!("  {}", format!("Planned Time: {}h {}m", planned_time.num_hours(), planned_time.num_minutes() % 60).bright_blue());
-    println!("  {}", format!("Booked Time : {}h {}m", booked_time.num_hours(), booked_time.num_minutes() % 60).bright_green());
+    println!("  {}", format!("Total Time  : {}", format_duration(sum_total_duration, false)).bright_white().bold());
+    println!("  {}", format!("Planned Time: {}", format_duration(planned_time, false)).bright_blue());
+    println!("  {}", format!("Booked Time : {}", format_duration(booked_time, false)).bright_green());
 
     if let Some(target) = target_time {
         let target_duration = Duration::minutes((target * 60.0) as i64);
@@ -1186,7 +1193,7 @@ fn main() -> Result<(), Error> {
                         let free_time = start_time_local - last_et;
                         if free_time > Duration::zero() {
                             println!("                               {}", format!("⋮").bright_green());
-                            println!("                               {} {}", format_duration(free_time).bright_green(), "free".bright_green());
+                            println!("                               {} {}", format_duration(free_time, true).bright_green(), "free".bright_green());
                             println!("                               {}", format!("⋮").bright_green());
                         }
                     }
