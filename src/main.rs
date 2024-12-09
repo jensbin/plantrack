@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
@@ -89,11 +89,44 @@ enum Commands {
         #[arg(short, long)]
         forward: bool,
     },
+    /// Add a todo item to the schedule.
+    Todo {
+        /// Project and task, separated by a colon. Example: "ProjectA:TaskB"
+        project_task: String,
+
+        /// Duration of the todo item in minutes. Defaults to 2 * rounding interval.
+        #[arg(short, long)]
+        minutes: Option<u32>,
+
+        /// Book a todo in project:task.
+        #[arg(short = 'i', long, value_name = "PROJECT:TASK")]
+        in_project_task: Option<String>,
+
+        /// Date in the format YYYY-MM-DD.
+        /// Example: "2024-03-16"
+        #[arg(long, short)]
+        date: Option<String>,
+
+        /// Timeslot in the format HH:MM-HH:MM (optional, defaults to 08:00-17:00).
+        #[arg(short, long, default_value = "08:00-17:00")]
+        timespan: String,
+
+        /// Optional note for the event.
+        #[arg(long, short)]
+        note: Option<String>,
+
+        /// Optional location for the event.
+        #[arg(short, long)]
+        location: Option<String>,
+    },
     /// List all scheduled events.
     List {
-        /// Number of days to look back and forward (default: 4).
+        /// Number of days to look back (default: 1).
+        #[arg(short, long, default_value_t = 1)]
+        past_days: u32,
+        /// Number of days to look forward (default: 4).
         #[arg(short, long, default_value_t = 4)]
-        days: u32, 
+        future_days: u32,
         /// Date for the listing in YYYY-MM-DD format. Defaults to today.
         #[arg(long)]
         date: Option<String>,
@@ -140,6 +173,16 @@ enum Commands {
     Set {
         /// The ID of the event to modify.
         id: String,
+
+        /// Optional Timespan in the format HH:MM-HH:MM.
+        /// Example: "14:30-15:00"
+        #[arg(short, long)]
+        timespan: Option<String>,
+
+        /// Optional Date in the format YYYY-MM-DD.
+        /// Example: "2024-03-16"
+        #[arg(long, short)]
+        date: Option<String>,
 
         /// Optional location for the event.
         #[arg(short, long)]
@@ -283,7 +326,7 @@ fn round_time_to_interval(time: NaiveTime, interval: u32, round_up: bool) -> Nai
 }
 
 fn parse_datetime(time_str: &str, date: Option<NaiveDate>, timezone: &Tz) -> Result<DateTime<Tz>, Error> {
-    let date = date.unwrap_or_else(|| Local::now().naive_local().date());
+    let date = date.unwrap_or_else(|| Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap().with_timezone(timezone).date_naive());
     NaiveTime::parse_from_str(time_str, "%H:%M")
         .map(|time| date.and_time(time))
         .map(|naive_datetime| timezone.from_local_datetime(&naive_datetime).unwrap())
@@ -487,7 +530,7 @@ fn save_events(file_path: &PathBuf, events: &[ScheduleEvent]) -> Result<(), Erro
 fn generate_ics(file_path: &PathBuf, events: &[ScheduleEvent], export_notes: bool) -> Result<(), Error> {
     let mut calendar = ICalendar::new("2.0", "-//plantrack//plantrack version 1.0//EN");
 
-    let now = Utc::now();
+    let now = Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap();
     let past_cutoff = now - Duration::days(7); // Include past 7 days in the export
 
     let mut exported_events_count = 0;
@@ -522,25 +565,30 @@ fn generate_ics(file_path: &PathBuf, events: &[ScheduleEvent], export_notes: boo
     Ok(())
 }
 
-fn print_events_grouped_by_day(events: &[ScheduleEvent], timezone: &Tz, days: u32, date_str: Option<String>) {
+fn print_events_grouped_by_day(events: &[ScheduleEvent], timezone: &Tz, days: u32, date_str: Option<String>, past: bool) {
     let now = if let Some(date_str) = date_str {
         match NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
             Ok(date) => timezone.from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap()).unwrap(),
             Err(_) => {
                 println!("{}", "Invalid date format. Using today.".yellow());
-                Utc::now().with_timezone(timezone)
+                Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap().with_timezone(timezone)
             }
         }
     } else {
-        Utc::now().with_timezone(timezone)
+        Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap().with_timezone(timezone)
     };
-    let realnow = Utc::now().with_timezone(timezone);
+    let realnow = Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap().with_timezone(timezone);
+    let day_range = if past {
+        -(days as i64)..=-1
+    } else {
+        0..=(days as i64)
+    };
 
-    for day_offset in -(days as i64)..=(days as i64) {
+    for day_offset in day_range {
         let current_date = now.date_naive() + Duration::days(day_offset as i64);
         let date_str = current_date.format("%Y-%m-%d - %a").to_string();
         let date_str = if current_date == realnow.date_naive() {
-            date_str.green().bold().to_string()
+            date_str.bright_yellow().bold().to_string()
         } else {
             date_str.bright_blue().bold().to_string()
         };
@@ -565,9 +613,25 @@ fn print_events_grouped_by_day(events: &[ScheduleEvent], timezone: &Tz, days: u3
                 if let Some(last_et) = last_end_time {
                     let free_time = start_time_local - last_et;
                     if free_time > Duration::zero() {
-                        println!("                               {}", format!("⋮").bright_green());
-                        println!("                               {} {}", format_duration(free_time, true).bright_green(), "free".bright_green());
-                        println!("                               {}", format!("⋮").bright_green());
+                        let now = Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap().with_timezone(timezone);
+                        if last_et <= now && now < start_time_local {
+                            let from_last_event = now - last_et;
+                            let til_next_event = start_time_local - now;
+                            println!("       {}                  {}",
+                                format_duration(from_last_event, true).bright_yellow().italic(),
+                                format!("⋮").bright_yellow());
+                            println!("  {}                        {} {}",
+                                "› ...".bright_yellow(),
+                                format_duration(free_time, true).bright_yellow(),
+                                "free".bright_yellow());
+                            println!("       {}                  {}",
+                                format_duration(til_next_event, true).bright_yellow().italic(),
+                                format!("⋮").bright_yellow());
+                        } else {
+                            println!("                               {}", format!("⋮").bright_green());
+                            println!("                               {} {}", format_duration(free_time, true).bright_green(), "free".bright_green());
+                            println!("                               {}", format!("⋮").bright_green());
+                        }
                     }
                 }
 
@@ -583,7 +647,7 @@ fn print_events_grouped_by_day(events: &[ScheduleEvent], timezone: &Tz, days: u3
 // Print travel information
 fn print_day_travel(events_for_day: &[&ScheduleEvent]) {
     if !events_for_day.is_empty() {
-    
+
         let mut travel_info: Vec<String> = Vec::new();
         let mut last_location: Option<String> = None;
         for event in events_for_day {
@@ -610,7 +674,7 @@ fn print_event(event: &ScheduleEvent, timezone: &Tz) {
     let start_time_local = event.start_time.with_timezone(timezone);
     let end_time_local = event.end_time.with_timezone(timezone);
     let duration = end_time_local - start_time_local; // Calculate duration in local time
-    let now = Utc::now().with_timezone(timezone);
+    let now = Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap().with_timezone(timezone);
     let booked_str = if event.booked {
         "✔".green()
     } else {
@@ -634,6 +698,19 @@ fn print_event(event: &ScheduleEvent, timezone: &Tz) {
 
     if start_time_local <= now && now < end_time_local {
         println!("  {}", format!("› {}", event_str).yellow()); // Highlight current event
+
+        // // Percentage bar
+        // let elapsed_duration = now - start_time_local;
+        // let percentage = (elapsed_duration.num_minutes() as f64 / duration.num_minutes() as f64) * 100.0;
+        // let bar_width = 20; // Adjust as needed
+        // let filled_width = (percentage / 100.0 * bar_width as f64) as usize;
+        // let bar = format!(
+        //     "[{}{}] {:.1}%",
+        //     "#".repeat(filled_width).yellow(),
+        //     " ".repeat(bar_width - filled_width),
+        //     percentage
+        // );
+        // println!("    {}", bar);
     } else {
         println!("    {}", event_str);
     }
@@ -657,7 +734,7 @@ fn format_duration(duration: Duration, human: bool) -> String {
     }
 }
 
-fn list_events(events: &[ScheduleEvent], days: u32, date_str: Option<String>, timezone: &Tz) {
+fn list_events(events: &[ScheduleEvent],past_days: u32, future_days: u32, date_str: Option<String>, timezone: &Tz) {
     if events.is_empty() {
         println!("{}", "No events found".yellow());
         return;
@@ -668,11 +745,11 @@ fn list_events(events: &[ScheduleEvent], days: u32, date_str: Option<String>, ti
             Ok(date) => timezone.from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap()).unwrap(),
             Err(_) => {
                 println!("{}", "Invalid date format. Using today.".yellow());
-                Utc::now().with_timezone(timezone)
+                Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap().with_timezone(timezone)
             }
         }
     } else {
-        Utc::now().with_timezone(timezone)
+        Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap().with_timezone(timezone)
     };
 
     // let time_window_start = (now - Duration::days(days as i64)).with_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap()).unwrap();
@@ -683,13 +760,23 @@ fn list_events(events: &[ScheduleEvent], days: u32, date_str: Option<String>, ti
     //     .filter(|event| event.start_time <= time_window_end && event.end_time >= time_window_start)
     //     .collect();
 
-    println!("Showing events within +/- {} from {} in timezone: {}", format!("{} days", days).yellow().bold(), now.date_naive(), timezone.name().green().bold());
-    print_events_grouped_by_day(events, timezone, days, date_str);
+    // println!("Showing events within {} from {} in timezone: {}", format!("-{} and +{} days", past_days, future_days).yellow().bold(), now.date_naive(), timezone.name().green().bold());
+    let start_date = now - Duration::days(past_days as i64);
+    let end_date = now + Duration::days(future_days as i64);
+
+    println!(
+        "Showing events from {} to {} in timezone: {}",
+        format!("{}", start_date.format("%Y-%m-%d")).bright_cyan().bold(),
+        format!("{}", end_date.format("%Y-%m-%d")).bright_cyan().bold(),
+        timezone.name().bright_green().bold()
+    );
+    print_events_grouped_by_day(events, timezone, past_days, date_str.clone(), true);
+    print_events_grouped_by_day(events, timezone, future_days, date_str, false);
     // print_events_grouped_by_day(&filtered_events, timezone);
 }
 
 fn generate_report(events: &[ScheduleEvent], project: &str, timezone: &Tz, month: Option<u32>, year: Option<i32>, target_time: Option<f64>) {
-    let now = Utc::now().with_timezone(timezone);
+    let now = Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap().with_timezone(timezone);
     let current_year = now.year();
     let current_month = now.month();
 
@@ -745,7 +832,7 @@ fn generate_report(events: &[ScheduleEvent], project: &str, timezone: &Tz, month
             let booked = if event.booked {
                 "[✔]".green()
             } else {
-                if event.end_time.with_timezone(timezone) < Utc::now().with_timezone(timezone) {
+                if event.end_time.with_timezone(timezone) < Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap().with_timezone(timezone) {
                     "[✗]".red()
                 } else {
                     "[≈]".blue()
@@ -798,37 +885,8 @@ fn generate_report(events: &[ScheduleEvent], project: &str, timezone: &Tz, month
 }
 
 fn cleanup_events(events: &mut Vec<ScheduleEvent>, days: u32) {
-    let cutoff_date = Utc::now() - Duration::days(days as i64);
+    let cutoff_date = Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap() - Duration::days(days as i64);
     events.retain(|event| event.end_time > cutoff_date);
-}
-
-fn set_event(events: &mut Vec<ScheduleEvent>, id: &str, location: Option<String>, note: Option<String>, booked: Option<bool>) -> Result<(), Error> {
-    let mut modified = false;
-    for event in events.iter_mut() {
-        if event.id == id {
-            if let Some(location) = location.clone() { // apply change if there is a new value
-                event.location = Some(location);
-            }
-            if let Some(note) = note.clone() {
-                event.note = Some(note);
-            }
-            if let Some(booked) = booked {
-                event.booked = booked;
-            }
-
-            modified = true;
-            break;
-        }
-    }
-
-    if modified {
-        Ok(())
-    } else {
-        Err(Error::new(
-            ErrorKind::NotFound,
-            format!("Event with ID {} not found", id),
-        ))
-    }
 }
 
 fn is_slot_free(events: &[ScheduleEvent], start_time: DateTime<Utc>, end_time: DateTime<Utc>) -> Result<bool, Vec<ScheduleEvent>> {
@@ -850,9 +908,10 @@ fn delete_event(events: &mut Vec<ScheduleEvent>, id: &str, timespan: Option<Stri
 
     if let Some(index) = event_index {
         if let Some(timespan_str) = timespan {
-            let (start_remove, end_remove) = parse_datetime_range(&timespan_str, None, rounding, timezone)?;
-
             let original_event = events[index].clone();
+            let event_date = original_event.start_time.date_naive().format("%Y-%m-%d");
+            let (start_remove, end_remove) = parse_datetime_range(&timespan_str, Some(event_date.to_string().as_str()), rounding, timezone)?;
+
 
             if start_remove >= original_event.end_time || end_remove <= original_event.start_time {
                 println!("{}", "Specified timespan does not overlap with the event.".yellow());
@@ -928,6 +987,52 @@ fn delete_event(events: &mut Vec<ScheduleEvent>, id: &str, timespan: Option<Stri
         println!("Event with ID {} not found", id.green().bold());
         Ok(false) // No changes made
     }
+}
+
+fn find_next_event_time(events: &[ScheduleEvent], project_task: &str, duration_minutes: u32, now: DateTime<Utc>) -> Result<(DateTime<Utc>, DateTime<Utc>), Error> {
+    let duration = Duration::minutes(duration_minutes as i64);
+    let target_events: Vec<&ScheduleEvent> = events
+        .iter()
+        .filter(|event| event.summary == project_task && event.start_time >= now && event.end_time > event.start_time + duration)
+        .collect();
+
+    if let Some(target_event) = target_events.first() {
+        Ok((target_event.start_time, target_event.start_time + duration))
+    } else {
+        Err(Error::new(ErrorKind::NotFound, format!("No upcoming event found with project:task '{}' and length of {} minutes", project_task, duration.num_minutes())))
+    }
+}
+
+
+fn find_free_slot(
+    events: &[ScheduleEvent],
+    timespan: &str,
+    date_str: Option<&str>,
+    duration_minutes: u32,
+    rounding: u32,
+    timezone: &Tz,
+) -> Result<(DateTime<Utc>, DateTime<Utc>), Error> {
+    let (start_time, end_time) = parse_datetime_range(timespan, date_str, rounding, timezone)?;
+
+    let mut current_time = start_time;
+    let duration = Duration::minutes(duration_minutes as i64);
+    let now = Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap();
+
+    if current_time < now {
+        current_time = now;
+        let rounded_time = round_time_to_interval(current_time.naive_utc().time(), rounding, true);
+        current_time = current_time.with_time(rounded_time).unwrap();
+    }
+    
+    while current_time + duration <= end_time {
+        let proposed_end_time = current_time + duration;
+        if is_slot_free(events, current_time, proposed_end_time).is_ok() {
+            return Ok((current_time, proposed_end_time));
+        }
+        current_time = current_time + duration;
+    }
+
+    Err(Error::new(ErrorKind::Other, "Could not find free slot."))
 }
 
 fn main() -> Result<(), Error> {
@@ -1087,7 +1192,53 @@ fn main() -> Result<(), Error> {
             generate_ics(&ics_file_path, &events, export_notes)?;
             println!("{}", "Event added".green());
         }
-        Commands::List { days, date } => list_events(&events, days, date, &timezone),
+        Commands::Todo { project_task, minutes, in_project_task, date, timespan, note, location } => {
+            let rounding_interval = rounding;
+            let duration_minutes = minutes.unwrap_or(rounding_interval * 2);
+            let now = Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap();
+
+            let (start_time, end_time) = if let Some(in_proj_task) = in_project_task {
+                find_next_event_time(&events, &in_proj_task, duration_minutes, now)?
+            } else {
+                match find_free_slot(&events, &timespan, date.as_deref(), duration_minutes, rounding, &timezone) {
+                    Ok(slot) => slot,
+                    Err(e) => {
+                        println!("{}", e); // Indicate why no free slot could be found
+                        return Ok(()); // Do not attempt to create a todo if no free slot is available
+                    }
+
+                }
+            };
+
+            let (project, task) = project_task.split_once(':').ok_or(Error::new(ErrorKind::InvalidInput, "Invalid project:task format"))?;
+            let summary = format!("{}:{}", project.trim(), task.trim());
+
+            let event = ScheduleEvent {
+                id: Uuid::new_v4().to_string(),
+                start_time,
+                end_time,
+                summary,
+                note,
+                location,
+                booked: false,
+            };
+
+            println!("{} {}", "New todo on".yellow().bold(), format!("{}", event.start_time.date_naive()).yellow());
+            print_event(&event, &timezone);
+
+            if Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt("Add this todo?")
+                .interact().unwrap()
+            {
+                split_overlapping_events(&mut events, event);
+                save_events(&schedule_file_path, &events)?;
+                generate_ics(&ics_file_path, &events, export_notes)?;
+                println!("{}", "Todo added".green());
+            } else {
+                println!("{}", "Todo not added".yellow());
+            }
+        }
+        Commands::List { past_days, future_days, date } => list_events(&events, past_days, future_days, date, &timezone),
         // Commands::List { days } => list_events(&events, days),
         Commands::Delete { id, timespan } => {
             if delete_event(&mut events, &id, timespan, rounding, &timezone)? {
@@ -1105,14 +1256,71 @@ fn main() -> Result<(), Error> {
             println!("Cleaned up events older than {} days.", days);
             generate_ics(&ics_file_path, &events, export_notes)?;
         }
-        Commands::Set { id, location, note, booked } => {
-            set_event(&mut events, &id, location, note, booked)?;
-            save_events(&schedule_file_path, &events)?;
-            generate_ics(&ics_file_path, &events, export_notes)?;
-            println!("Event with ID {} modified", id.green().bold());
+        Commands::Set { id, location, note, booked, timespan, date } => {
+            let event_index = events.iter().position(|event| event.id == id).ok_or_else(|| {
+                Error::new(ErrorKind::NotFound, format!("Event with ID {} not found", id))
+            })?;
+
+            let original_event = events[event_index].clone(); // Clone for comparison
+
+            // Modify the cloned event, not the original in the vector yet
+            let mut modified_event = original_event.clone();
+
+            if let Some(location) = location.clone() {
+                modified_event.location = Some(location);
+            }
+            if let Some(note) = note.clone() {
+                modified_event.note = Some(note);
+            }
+            if let Some(booked) = booked {
+                modified_event.booked = booked;
+            }
+
+            let (new_start_time, new_end_time) = if let Some(date_str) = date {
+                let timespan_str = timespan.unwrap_or_else(|| {
+                    let start_time = original_event.start_time.with_timezone(&timezone).time();
+                    let end_time = original_event.end_time.with_timezone(&timezone).time();
+                    format!("{}-{}", start_time.format("%H:%M"), end_time.format("%H:%M"))
+                });
+                parse_datetime_range(&timespan_str, Some(&date_str), rounding, &timezone)?
+            } else if let Some(timespan_str) = timespan {
+                let date_str = original_event.start_time.with_timezone(&timezone).format("%Y-%m-%d").to_string();
+                parse_datetime_range(&timespan_str, Some(&date_str), rounding, &timezone)?
+            } else {
+                (original_event.start_time, original_event.end_time) // No time/date change
+            };
+        
+        
+            if new_start_time != original_event.start_time || new_end_time != original_event.end_time || modified_event != original_event {
+                modified_event.start_time = new_start_time;
+                modified_event.end_time = new_end_time;
+        
+                println!("{}", "Modified event:".yellow().bold());
+                println!("{}", format_event_for_diff(&modified_event).green());
+        
+                let confirmed = Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Apply these changes?")
+                    .interact();
+        
+                if confirmed.is_err() || !confirmed.unwrap() {
+                    println!("{}", "Changes not applied".yellow());
+                    return Ok(());
+                }
+        
+                events.remove(event_index);
+                split_overlapping_events(&mut events, modified_event.clone()); // Handle overlaps if date/time changed
+                save_events(&schedule_file_path, &events)?;
+                generate_ics(&ics_file_path, &events, export_notes)?;
+        
+                println!("Event with ID {} modified", id.green().bold());
+        
+        
+            } else {
+                println!("{}", "No changes specified for event".yellow());
+            }
         }
         Commands::Current {} => {
-            let now = Utc::now().with_timezone(&timezone);
+            let now = Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap().with_timezone(&timezone);
             let current_event = events.iter().find(|event| {
                 event.start_time <= now && now < event.end_time
             });
@@ -1153,9 +1361,9 @@ fn main() -> Result<(), Error> {
                 Ok(true) => {
                     println!("{}", format!("\nSlot {} - {} on {} is free", start_time_local.format("%H:%M"), end_time_local.format("%H:%M"), start_time_local.format("%Y-%m-%d")).green());
                 }
-                Ok(false) => { 
+                Ok(false) => {
                     // This case is not possible anymore as is_slot_free either returns Ok(true) or Err(event)
-                    unreachable!(); 
+                    unreachable!();
                 },
                 Err(conflicting_events) => {
                     if conflicting_events.iter().all(|e| !e.booked) {
