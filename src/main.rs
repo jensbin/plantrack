@@ -1264,16 +1264,20 @@ fn main() -> Result<(), Error> {
             let original_event = events[event_index].clone(); // Clone for comparison
 
             // Modify the cloned event, not the original in the vector yet
+            let mut modified = false;
             let mut modified_event = original_event.clone();
 
             if let Some(location) = location.clone() {
                 modified_event.location = Some(location);
+                modified = true;
             }
             if let Some(note) = note.clone() {
                 modified_event.note = Some(note);
+                modified = true;
             }
             if let Some(booked) = booked {
                 modified_event.booked = booked;
+                modified = true;
             }
 
             let (new_start_time, new_end_time) = if let Some(date_str) = date {
@@ -1290,13 +1294,17 @@ fn main() -> Result<(), Error> {
                 (original_event.start_time, original_event.end_time) // No time/date change
             };
         
-        
-            if new_start_time != original_event.start_time || new_end_time != original_event.end_time || modified_event != original_event {
+            if new_start_time != original_event.start_time || new_end_time != original_event.end_time {
                 modified_event.start_time = new_start_time;
                 modified_event.end_time = new_end_time;
         
                 println!("{}", "Modified event:".yellow().bold());
-                println!("{}", format_event_for_diff(&modified_event).green());
+                println!("- {}", format_event_for_diff(&original_event).red());
+                let overlaps = split_overlapping_events(&mut events, modified_event.clone());
+                if !overlaps {
+                    println!("{}", format!("Changes to event:").yellow().bold());
+                    println!("+ {}", format_event_for_diff(&modified_event).green());
+                }
         
                 let confirmed = Confirm::with_theme(&ColorfulTheme::default())
                     .with_prompt("Apply these changes?")
@@ -1306,9 +1314,12 @@ fn main() -> Result<(), Error> {
                     println!("{}", "Changes not applied".yellow());
                     return Ok(());
                 }
-        
+                modified = true;
+            }
+
+            if modified {
                 events.remove(event_index);
-                split_overlapping_events(&mut events, modified_event.clone()); // Handle overlaps if date/time changed
+                split_overlapping_events(&mut events, modified_event); // Handle overlaps if date/time changed
                 save_events(&schedule_file_path, &events)?;
                 generate_ics(&ics_file_path, &events, export_notes)?;
         
