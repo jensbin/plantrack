@@ -1035,6 +1035,16 @@ fn find_free_slot(
     Err(Error::new(ErrorKind::Other, "Could not find free slot."))
 }
 
+fn round_duration_up(duration: Duration, interval: u32) -> Duration {
+    let minutes = duration.num_minutes();
+    let remainder = minutes % interval as i64;
+    if remainder > 0 {
+        duration + Duration::minutes((interval as i64 - remainder) as i64)
+    } else {
+        duration
+    }
+}
+
 fn main() -> Result<(), Error> {
     let args = Args::parse();
 
@@ -1128,23 +1138,19 @@ fn main() -> Result<(), Error> {
         }
         Commands::Quickadd { project_task, minutes, note, location, forward } => {
             let now = Utc::now().with_second(0).unwrap().with_nanosecond(0).unwrap();
-            let duration_minutes = minutes.unwrap_or(rounding);
+            let duration_minutes = round_duration_up(Duration::minutes(minutes.unwrap_or(rounding) as i64), rounding);
 
             let (start_time, end_time) = if forward {
                 let start_time = round_time_to_interval(now.naive_utc().time(), rounding, false);
                 let start_time = now.with_time(start_time).unwrap();
-
-                let end_time = start_time + Duration::minutes(duration_minutes as i64);
+                let end_time = start_time + duration_minutes;
                 (start_time, end_time)
             } else {
                 let end_time = round_time_to_interval(now.naive_utc().time(), rounding, true);
                 let end_time = now.with_time(end_time).unwrap();
-
-                let start_time = end_time - Duration::minutes(duration_minutes as i64);
+                let start_time = end_time - duration_minutes;
                 (start_time, end_time)
             };
-
-
 
             let (project, task) = project_task
                 .split_once(':')
