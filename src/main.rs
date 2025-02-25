@@ -498,27 +498,57 @@ fn format_event_for_diff(event: &ScheduleEvent, timezone: &Tz) -> String {
 fn format_event_change_for_diff(before: &ScheduleEvent, after: &ScheduleEvent, timezone: &Tz) -> String {
     let mut changes = Vec::new();
 
+    if before.start_time.date_naive() != after.start_time.date_naive() {
+        changes.push(format!(
+            "~  date    : {} → {}",
+            before.start_time.with_timezone(timezone).format("%Y-%m-%d"),
+            after.start_time.with_timezone(timezone).format("%Y-%m-%d")
+        ).yellow().to_string());
+    }
     if before.start_time != after.start_time {
-        changes.push(format!("start_time: {} → {}", before.start_time.with_timezone(timezone).format("%Y-%m-%d %H:%M"), after.start_time.with_timezone(timezone).format("%Y-%m-%d %H:%M")));
+        changes.push(format!(
+            "~  start   : {} → {}",
+            before.start_time.with_timezone(timezone).format("%H:%M"),
+            after.start_time.with_timezone(timezone).format("%H:%M")
+        ).yellow().to_string());
     }
     if before.end_time != after.end_time {
-        changes.push(format!("end_time: {} → {}", before.end_time.with_timezone(timezone).format("%Y-%m-%d %H:%M"), after.end_time.with_timezone(timezone).format("%Y-%m-%d %H:%M")));
+        changes.push(format!(
+            "~  end     : {} → {}",
+            before.end_time.with_timezone(timezone).format("%H:%M"),
+            after.end_time.with_timezone(timezone).format("%H:%M")
+        ).yellow().to_string());
     }
     if before.note != after.note {
-        changes.push(format!("note: {:?} → {:?}", before.note, after.note));
+        let before_note = before.note.as_deref().unwrap_or_default();
+        let after_note = after.note.as_deref().unwrap_or_default();
+
+        let change_string = match (&before.note, &after.note) {
+            (Some(_), None) => format!("-  note    : {}", before_note).red().to_string(),
+            (None, Some(_)) => format!("+  note    : {}", after_note).green().to_string(),
+            _ => format!("~  note    : {} → {}", before_note, after_note).yellow().to_string(),
+        };
+        changes.push(change_string);
     }
     if before.location != after.location {
-        changes.push(format!("location: {:?} → {:?}", before.location, after.location));
+        let before_location = before.location.as_deref().unwrap_or_default();
+        let after_location = after.location.as_deref().unwrap_or_default();
+        let change_string = match (&before.location, &after.location) {
+            (Some(_), None) => format!("-  location: {}", before_location).red().to_string(),
+            (None, Some(_)) => format!("+  location: {}", after_location).green().to_string(),
+            _ => format!("~  location: {} → {}", before_location, after_location).yellow().to_string(),
+        };
+        changes.push(change_string);
     }
     if before.booked != after.booked {
-        changes.push(format!("booked: {} → {}", before.booked, after.booked));
+        changes.push(format!("~  booked  : {} → {}", before.booked, after.booked).yellow().to_string());
     }
 
     format!(
-        "{} ({})\n~  {}",
+        "{} ({})\n{}",
         after.summary,
         after.id,
-        changes.join("\n~  ")
+        changes.join("\n")
     )
 }
 
@@ -1295,11 +1325,19 @@ fn main() -> Result<(), Error> {
             let mut modified = false;
 
             if let Some(location) = location {
-                modified_event.location = Some(location);
+                if location.is_empty() {
+                    modified_event.location = None;
+                } else {
+                    modified_event.location = Some(location);
+                }
                 modified = true;
             }
             if let Some(note) = note {
-                modified_event.note = Some(note);
+                if note.is_empty() {
+                    modified_event.note = None;
+                } else {
+                    modified_event.note = Some(note);
+                }
                 modified = true;
             }
             if let Some(booked) = booked {
@@ -1329,7 +1367,7 @@ fn main() -> Result<(), Error> {
 
 
             if modified {
-                println!("~ {}", format_event_change_for_diff(&original_event, &modified_event, &timezone).yellow());
+                println!("{} {}", format!("Change event:").yellow().bold(), format_event_change_for_diff(&original_event, &modified_event, &timezone).yellow());
                 if Confirm::with_theme(&ColorfulTheme::default())
                     .with_prompt("Apply these changes?")
                     .interact()
