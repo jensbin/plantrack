@@ -393,7 +393,7 @@ fn merge_events(events: &mut Vec<ScheduleEvent>) {
     events.sort_by_key(|event| event.start_time); // Sort by start time after merging
 }
 
-fn split_overlapping_events(events: &mut Vec<ScheduleEvent>, new_event: ScheduleEvent) -> bool {
+fn split_overlapping_events(events: &mut Vec<ScheduleEvent>, new_event: ScheduleEvent, timezone: &Tz) -> bool {
     let mut overlaps_exist = false;
     let mut new_events = Vec::new();
     let original_events = events.clone();
@@ -449,12 +449,12 @@ fn split_overlapping_events(events: &mut Vec<ScheduleEvent>, new_event: Schedule
     merge_events(events); // Merge after splitting and adding
 
     if overlaps_exist {
-        print_event_diff(&original_events, events);
+        print_event_diff(&original_events, events, &timezone);
     }
     overlaps_exist
 }
 
-fn print_event_diff(before: &[ScheduleEvent], after: &[ScheduleEvent]) {
+fn print_event_diff(before: &[ScheduleEvent], after: &[ScheduleEvent], timezone: &Tz) {
     println!("{}", "Changes to existing events:".yellow().bold());
 
     let before_map: HashMap<&str, &ScheduleEvent> = before.iter().map(|e| (e.id.as_str(), e)).collect();
@@ -463,26 +463,26 @@ fn print_event_diff(before: &[ScheduleEvent], after: &[ScheduleEvent]) {
     // Deleted events
     for id in before_map.keys() {
         if !after_map.contains_key(id) {
-            println!("- {}", format_event_for_diff(before_map[id]).red());
+            println!("- {}", format_event_for_diff(before_map[id], timezone).red());
         }
     }
 
     // Added or modified events
     for id in after_map.keys() {
         if !before_map.contains_key(id) {
-            println!("+ {}", format_event_for_diff(after_map[id]).green());
+            println!("+ {}", format_event_for_diff(after_map[id], timezone).green());
         } else if before_map[id] != after_map[id] { // Direct comparison
             let before_event = before_map[id];
             let after_event = after_map[id];
-            println!("~ {}", format_event_change_for_diff(before_event, after_event).yellow());
+            println!("~ {}", format_event_change_for_diff(before_event, after_event, timezone).yellow());
         }
     }
     println!();
 }
 
-fn format_event_for_diff(event: &ScheduleEvent) -> String {
-    let start_time = event.start_time;
-    let end_time = event.end_time;
+fn format_event_for_diff(event: &ScheduleEvent, timezone: &Tz) -> String {
+    let start_time = event.start_time.with_timezone(timezone);
+    let end_time = event.end_time.with_timezone(timezone);
     format!(
         "{} - {} {} ({}) {} {}",
         start_time.format("%Y-%m-%d %H:%M"),
@@ -495,14 +495,14 @@ fn format_event_for_diff(event: &ScheduleEvent) -> String {
     )
 }
 
-fn format_event_change_for_diff(before: &ScheduleEvent, after: &ScheduleEvent) -> String {
+fn format_event_change_for_diff(before: &ScheduleEvent, after: &ScheduleEvent, timezone: &Tz) -> String {
     let mut changes = Vec::new();
 
     if before.start_time != after.start_time {
-        changes.push(format!("start_time: {} → {}", before.start_time.format("%Y-%m-%d %H:%M"), after.start_time.format("%Y-%m-%d %H:%M")));
+        changes.push(format!("start_time: {} → {}", before.start_time.with_timezone(timezone).format("%Y-%m-%d %H:%M"), after.start_time.with_timezone(timezone).format("%Y-%m-%d %H:%M")));
     }
     if before.end_time != after.end_time {
-        changes.push(format!("end_time: {} → {}", before.end_time.format("%Y-%m-%d %H:%M"), after.end_time.format("%Y-%m-%d %H:%M")));
+        changes.push(format!("end_time: {} → {}", before.end_time.with_timezone(timezone).format("%Y-%m-%d %H:%M"), after.end_time.with_timezone(timezone).format("%Y-%m-%d %H:%M")));
     }
     if before.note != after.note {
         changes.push(format!("note: {:?} → {:?}", before.note, after.note));
@@ -515,10 +515,10 @@ fn format_event_change_for_diff(before: &ScheduleEvent, after: &ScheduleEvent) -
     }
 
     format!(
-        "{} ({})\n   {}",
+        "{} ({})\n~  {}",
         after.summary,
         after.id,
-        changes.join("\n   ")
+        changes.join("\n~  ")
     )
 }
 
@@ -967,7 +967,7 @@ fn delete_event(events: &mut Vec<ScheduleEvent>, id: &str, timespan: Option<Stri
                 });
             }
 
-            print_event_diff(&[original_event], &modified_events);
+            print_event_diff(&[original_event], &modified_events, &timezone);
 
             let confirmed = Confirm::with_theme(&ColorfulTheme::default())
                 .with_prompt("Apply these changes?")
@@ -989,7 +989,7 @@ fn delete_event(events: &mut Vec<ScheduleEvent>, id: &str, timespan: Option<Stri
             let original_event = &events[index];
 
             println!("{}", "Deleting the following event:".yellow().bold());
-            println!("- {}", format_event_for_diff(&original_event).red());
+            println!("- {}", format_event_for_diff(&original_event, &timezone).red());
 
             let confirmed = Confirm::with_theme(&ColorfulTheme::default())
                 .with_prompt("Delete this event?")
@@ -1130,10 +1130,10 @@ fn main() -> Result<(), Error> {
                 booked,
             };
 
-            let overlaps = split_overlapping_events(&mut events, event.clone());
+            let overlaps = split_overlapping_events(&mut events, event.clone(), &timezone);
             if !overlaps {
                 println!("{}", "New event:".yellow().bold());
-                println!("+ {}", format_event_for_diff(&event).green());
+                println!("+ {}", format_event_for_diff(&event,&timezone).green());
             }
 
             let confirmed = Confirm::with_theme(&ColorfulTheme::default())
@@ -1189,10 +1189,10 @@ fn main() -> Result<(), Error> {
                 booked: true,
             };
 
-            let overlaps = split_overlapping_events(&mut events, event.clone());
+            let overlaps = split_overlapping_events(&mut events, event.clone(), &timezone);
             if !overlaps {
                 println!("{}", "New event:".yellow().bold());
-                println!("+ {}", format_event_for_diff(&event).green());
+                println!("+ {}", format_event_for_diff(&event, &timezone).green());
             }
 
             let confirmed = Confirm::with_theme(&ColorfulTheme::default())
@@ -1258,7 +1258,7 @@ fn main() -> Result<(), Error> {
                 .with_prompt("Add this todo?")
                 .interact().unwrap()
             {
-                split_overlapping_events(&mut events, event);
+                split_overlapping_events(&mut events, event, &timezone);
                 save_events(&schedule_file_path, &events)?;
                 generate_ics(&ics_file_path, &events, export_notes)?;
                 println!("{}", "Todo added".green());
@@ -1329,14 +1329,14 @@ fn main() -> Result<(), Error> {
 
 
             if modified {
-                println!("~ {}", format_event_change_for_diff(&original_event, &modified_event).yellow());
+                println!("~ {}", format_event_change_for_diff(&original_event, &modified_event, &timezone).yellow());
                 if Confirm::with_theme(&ColorfulTheme::default())
                     .with_prompt("Apply these changes?")
                     .interact()
                     .unwrap()
                 {
                     events.remove(event_index);
-                    split_overlapping_events(&mut events, modified_event);
+                    split_overlapping_events(&mut events, modified_event, &timezone);
                     save_events(&schedule_file_path, &events)?;
                     generate_ics(&ics_file_path, &events, export_notes)?;
                     println!("Event with ID {} modified", id.green().bold());
