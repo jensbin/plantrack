@@ -457,46 +457,68 @@ fn split_overlapping_events(events: &mut Vec<ScheduleEvent>, new_event: Schedule
 fn print_event_diff(before: &[ScheduleEvent], after: &[ScheduleEvent]) {
     println!("{}", "Changes to existing events:".yellow().bold());
 
-    let before_ids: Vec<&str> = before.iter().map(|e| e.id.as_str()).collect();
-    let after_ids: Vec<&str> = after.iter().map(|e| e.id.as_str()).collect();
+    let before_map: HashMap<&str, &ScheduleEvent> = before.iter().map(|e| (e.id.as_str(), e)).collect();
+    let after_map: HashMap<&str, &ScheduleEvent> = after.iter().map(|e| (e.id.as_str(), e)).collect();
 
     // Deleted events
-    for event in before {
-        if !after_ids.contains(&event.id.as_str()) {
-            println!("- {}", format_event_for_diff(event).red());
+    for id in before_map.keys() {
+        if !after_map.contains_key(id) {
+            println!("- {}", format_event_for_diff(before_map[id]).red());
         }
     }
 
     // Added or modified events
-    for event in after {
-        if !before_ids.contains(&event.id.as_str()) {
-            println!("+ {}", format_event_for_diff(event).green());
-        } else {
-            // Check for modifications (excluding id and start_time which are handled by split/merge)
-            let before_event = before.iter().find(|e| e.id == event.id).unwrap();
-            if before_event.end_time != event.end_time
-                || before_event.summary != event.summary
-                || before_event.note != event.note
-                || before_event.location != event.location
-                || before_event.booked != event.booked
-            {
-                println!("~ {}", format_event_for_diff(event).yellow());
-            }
+    for id in after_map.keys() {
+        if !before_map.contains_key(id) {
+            println!("+ {}", format_event_for_diff(after_map[id]).green());
+        } else if before_map[id] != after_map[id] { // Direct comparison
+            let before_event = before_map[id];
+            let after_event = after_map[id];
+            println!("~ {}", format_event_change_for_diff(before_event, after_event).yellow());
         }
     }
     println!();
 }
 
-
 fn format_event_for_diff(event: &ScheduleEvent) -> String {
-    let start_time = event.start_time.with_timezone(&Utc);
-    let end_time = event.end_time.with_timezone(&Utc);
+    let start_time = event.start_time;
+    let end_time = event.end_time;
     format!(
-        "{} - {} {} ({})",
+        "{} - {} {} ({}) {} {}",
         start_time.format("%Y-%m-%d %H:%M"),
         end_time.format("%H:%M"),
         event.summary,
-        event.id
+        event.id,
+        event.note.as_deref().unwrap_or_default(),
+        event.location.as_deref().unwrap_or_default()
+
+    )
+}
+
+fn format_event_change_for_diff(before: &ScheduleEvent, after: &ScheduleEvent) -> String {
+    let mut changes = Vec::new();
+
+    if before.start_time != after.start_time {
+        changes.push(format!("start_time: {} → {}", before.start_time.format("%Y-%m-%d %H:%M"), after.start_time.format("%Y-%m-%d %H:%M")));
+    }
+    if before.end_time != after.end_time {
+        changes.push(format!("end_time: {} → {}", before.end_time.format("%Y-%m-%d %H:%M"), after.end_time.format("%Y-%m-%d %H:%M")));
+    }
+    if before.note != after.note {
+        changes.push(format!("note: {:?} → {:?}", before.note, after.note));
+    }
+    if before.location != after.location {
+        changes.push(format!("location: {:?} → {:?}", before.location, after.location));
+    }
+    if before.booked != after.booked {
+        changes.push(format!("booked: {} → {}", before.booked, after.booked));
+    }
+
+    format!(
+        "{} ({})\n   {}",
+        after.summary,
+        after.id,
+        changes.join("\n   ")
     )
 }
 
@@ -1267,17 +1289,16 @@ fn main() -> Result<(), Error> {
                 Error::new(ErrorKind::NotFound, format!("Event with ID {} not found", id))
             })?;
 
-            let original_event = events[event_index].clone(); // Clone for comparison
+            let original_event = events[event_index].clone();
 
-            // Modify the cloned event, not the original in the vector yet
-            let mut modified = false;
             let mut modified_event = original_event.clone();
+            let mut modified = false;
 
-            if let Some(location) = location.clone() {
+            if let Some(location) = location {
                 modified_event.location = Some(location);
                 modified = true;
             }
-            if let Some(note) = note.clone() {
+            if let Some(note) = note {
                 modified_event.note = Some(note);
                 modified = true;
             }
@@ -1286,6 +1307,7 @@ fn main() -> Result<(), Error> {
                 modified = true;
             }
 
+            // Simplified date/time handling
             let (new_start_time, new_end_time) = if let Some(date_str) = date {
                 let timespan_str = timespan.unwrap_or_else(|| {
                     let start_time = original_event.start_time.with_timezone(&timezone).time();
@@ -1297,41 +1319,30 @@ fn main() -> Result<(), Error> {
                 let date_str = original_event.start_time.with_timezone(&timezone).format("%Y-%m-%d").to_string();
                 parse_datetime_range(&timespan_str, Some(&date_str), rounding, &timezone)?
             } else {
-                (original_event.start_time, original_event.end_time) // No time/date change
+                (original_event.start_time, original_event.end_time)
             };
-        
             if new_start_time != original_event.start_time || new_end_time != original_event.end_time {
                 modified_event.start_time = new_start_time;
                 modified_event.end_time = new_end_time;
-        
-                println!("{}", "Modified event:".yellow().bold());
-                println!("- {}", format_event_for_diff(&original_event).red());
-                let overlaps = split_overlapping_events(&mut events, modified_event.clone());
-                if !overlaps {
-                    println!("{}", format!("Changes to event:").yellow().bold());
-                    println!("+ {}", format_event_for_diff(&modified_event).green());
-                }
-        
-                let confirmed = Confirm::with_theme(&ColorfulTheme::default())
-                    .with_prompt("Apply these changes?")
-                    .interact();
-        
-                if confirmed.is_err() || !confirmed.unwrap() {
-                    println!("{}", "Changes not applied".yellow());
-                    return Ok(());
-                }
                 modified = true;
             }
 
+
             if modified {
-                events.remove(event_index);
-                split_overlapping_events(&mut events, modified_event); // Handle overlaps if date/time changed
-                save_events(&schedule_file_path, &events)?;
-                generate_ics(&ics_file_path, &events, export_notes)?;
-        
-                println!("Event with ID {} modified", id.green().bold());
-        
-        
+                println!("~ {}", format_event_change_for_diff(&original_event, &modified_event).yellow());
+                if Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Apply these changes?")
+                    .interact()
+                    .unwrap()
+                {
+                    events.remove(event_index);
+                    split_overlapping_events(&mut events, modified_event);
+                    save_events(&schedule_file_path, &events)?;
+                    generate_ics(&ics_file_path, &events, export_notes)?;
+                    println!("Event with ID {} modified", id.green().bold());
+                } else {
+                    println!("{}", "Changes not applied".yellow());
+                }
             } else {
                 println!("{}", "No changes specified for event".yellow());
             }
