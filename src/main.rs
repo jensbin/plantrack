@@ -17,6 +17,7 @@ use std::env::var;
 use uuid::Uuid;
 use toml::{from_str, to_string_pretty};
 use xdg::BaseDirectories;
+use iana_time_zone;
 
 const APP_NAME: &str = "plantrack";
 const DEFAULT_CONFIG_FILE: &str = "config.toml";
@@ -1127,7 +1128,10 @@ fn main() -> Result<(), Error> {
         })?,
         None => match var("TZ").ok().and_then(|tz_env| tz_env.parse().ok()) { // Then check environment variable
             Some(tz) => tz,
-            None => config.timezone.as_deref().and_then(|tz_config| tz_config.parse().ok()).unwrap_or(Tz::UTC), // Then config, finally UTC
+            None => match iana_time_zone::get_timezone().unwrap().parse().ok() {
+                Some(tz) => tz,
+                None => config.timezone.as_deref().and_then(|tz_config| tz_config.parse().ok()).unwrap_or(Tz::UTC) // Then config, finally UTC
+            }
         },
     };
 

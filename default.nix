@@ -11,7 +11,7 @@ let
 in
 rustPlatform.buildRustPackage {
   pname = "plantrack";
-  version = "0.1.4";
+  version = "0.1.5";
 
   src = fs.toSource {
     root = ./.;
