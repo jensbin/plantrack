@@ -505,14 +505,14 @@ fn format_event_change_for_diff(before: &ScheduleEvent, after: &ScheduleEvent, t
             after.start_time.with_timezone(timezone).format("%Y-%m-%d")
         ).yellow().to_string());
     }
-    if before.start_time != after.start_time {
+    if before.start_time.time() != after.start_time.time() {
         changes.push(format!(
             "~  start   : {} → {}",
             before.start_time.with_timezone(timezone).format("%H:%M"),
             after.start_time.with_timezone(timezone).format("%H:%M")
         ).yellow().to_string());
     }
-    if before.end_time != after.end_time {
+    if before.end_time.time() != after.end_time.time() {
         changes.push(format!(
             "~  end     : {} → {}",
             before.end_time.with_timezone(timezone).format("%H:%M"),
