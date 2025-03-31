@@ -719,9 +719,10 @@ fn print_day_travel(events_for_day: &[&ScheduleEvent]) {
         if let Some(last_loc) = last_location {
             travel_info.push(last_loc);
         }
-        if travel_info.len() >= 1 {
-            // println!("           {}",  format!("↳ ✈: {}", travel_info.join(" → ")).bright_purple());
-            println!("           {}",  format!("↳ ✈: {}", travel_info.join(" → ")).bright_blue().italic());
+        if travel_info.len() > 1 {
+            println!("           {}", format!("↳ ✈: {}", travel_info.join(" → ")).bright_blue().italic());
+        } else if travel_info.len() == 1 {
+            println!("           {}", format!("↳ ⌂: {}", travel_info.join(" → ")).bright_blue().italic());
         }
     }
 }
@@ -826,9 +827,6 @@ fn list_events(events: &[ScheduleEvent],past_days: u32, future_days: u32, date_s
         format!("{}", end_date.format("%Y-%m-%d")).bright_cyan().bold(),
         timezone.name().bright_green().bold()
     );
-    print_events_grouped_by_day(events, timezone, past_days, date_str.clone(), true);
-    print_events_grouped_by_day(events, timezone, future_days, date_str, false);
-    // print_events_grouped_by_day(&filtered_events, timezone);
     if summary {
         let start_date = now - Duration::days(past_days as i64);
         let end_date = now + Duration::days(future_days as i64);
@@ -842,17 +840,40 @@ fn list_events(events: &[ScheduleEvent],past_days: u32, future_days: u32, date_s
         
         let mut project_summary: HashMap<String, Duration> = HashMap::new();
 
-        for event in events_in_range {
+        for event in events_in_range.clone() {
             let (project, _) = event.summary.split_once(':').unwrap_or(("", &event.summary));
             let duration = event.end_time - event.start_time;
             *project_summary.entry(project.to_string()).or_insert(Duration::zero()) += duration;
         }
 
-        println!("\n{}", "Summary:".bright_yellow().bold());
+        let mut travel_info: Vec<String> = Vec::new();
+        let mut last_location: Option<String> = None;
+        for event in events_in_range {
+            if let Some(location) = &event.location {
+                if last_location.as_ref() != Some(location) {
+                    if let Some(last_loc) = last_location {
+                        travel_info.push(last_loc);
+                    }
+                    last_location = Some(location.clone());
+                }
+            }
+        }
+        if let Some(last_loc) = last_location {
+            travel_info.push(last_loc);
+        }
+        if travel_info.len() >= 1 {
+            println!("\n{} ({})", "Summary:".bright_yellow().bold(), travel_info.join(" → ").bright_blue().italic());
+        } else {
+            println!("\n{}", "Summary:".bright_yellow().bold());
+        }
         for (project, duration) in project_summary {
             println!("  {}: {}", project.bright_blue(), format_duration(duration, true));
         }
     }
+    println!("\n");
+    print_events_grouped_by_day(events, timezone, past_days, date_str.clone(), true);
+    print_events_grouped_by_day(events, timezone, future_days, date_str, false);
+    // print_events_grouped_by_day(&filtered_events, timezone);
 }
 
 fn generate_report(events: &[ScheduleEvent], project: &str, timezone: &Tz, month: Option<u32>, year: Option<i32>, target_time: Option<f64>) {
