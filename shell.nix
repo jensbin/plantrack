@@ -1,5 +1,8 @@
 { pkgs ? import <nixpkgs> {} }:
 
 pkgs.mkShell {
-  packages = with pkgs; [ cargo ];
+  packages = with pkgs; [
+    cargo
+    python3
+  ];
 }

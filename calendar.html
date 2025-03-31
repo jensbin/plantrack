@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer" />
+    <link rel="icon" href="data:image/png;base64,iVBORw0KGgo=">
+    <title>Plan & Track</title>
+    <style>
+        :root {
+            --numHours: 16; /* 6:00 to 22:00 */
+            --timeHeight: 60px;
+            --calBgColor: #f2f2f2;
+            --hourLine: #ddd;
+            --eventBorderColor: #003060;
+            --eventColor: #055c9d;
+            --eventColorTentative: #66676b;
+            --currentTimeColor: rgba(232, 220, 124, 0.84);
+            --currentTimeTextColor: #333; /* added */
+        }
+
+        .calendar {
+            display: grid;
+            gap: 10px;
+            grid-template-columns: auto 1fr;
+            margin: 2rem;
+        }
+
+        .timeline {
+            display: grid;
+            grid-template-rows: repeat(var(--numHours), var(--timeHeight));
+        }
+
+        .days {
+            display: grid;
+            grid-column: 2;
+            gap: 5px;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        }
+
+        .events {
+            display: grid;
+            grid-template-rows: repeat(var(--numHours), var(--timeHeight));
+            border-radius: 5px;
+            background: var(--calBgColor);
+            position: relative;
+        }
+
+        .hour-line {
+            position: absolute;
+            left: 0;
+            width: 100%;
+            border-bottom: 1px solid var(--hourLine);
+        }
+
+        .event {
+            position: absolute;
+            color: white;
+            background: var(--eventColor);
+            border: 1px solid var(--eventBorderColor);
+            border-radius: 5px;
+            padding: 0.2rem 0.5rem;
+            margin: 0 0.5rem;
+            width: calc(100% - 1rem);
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .event.current {
+            background-color: green !important;
+        }
+
+        .event:hover {
+            position: absolute;
+            z-index: 10;
+            background-color: var(--eventColor);
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+            overflow: visible;
+            white-space: normal;
+            width: 200px;
+            left: 0;
+        }
+
+        .event .hover-box {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: calc(100% + 5px);
+            background-color: white;
+            color: black;
+            border: 1px solid #ccc;
+            padding: 5px;
+            border-radius: 5px;
+            z-index: 11;
+            min-width: 150px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+
+        .event:hover .hover-box {
+            display: block;
+        }
+
+        .event-time {
+            font-size: 0.7rem;
+            flex-shrink: 0;
+        }
+
+        .event-title {
+            font-weight: bold;
+            font-size: 0.8rem;
+            word-break: break-word;
+            hyphens: auto;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .title {
+            font-weight: 600;
+        }
+
+        .space,
+        .date {
+            height: 60px
+        }
+
+        body {
+            font-family: system-ui, sans-serif;
+        }
+
+        .date {
+            display: flex;
+            gap: 1em;
+            align-items: center;
+        }
+
+        .date-num {
+            font-size: 3rem;
+            font-weight: 600;
+
+        }
+
+        .date-day {
+            font-size: 1.5rem;
+            font-weight: 100;
+        }
+
+        .time-marker {
+            font-size: 0.8rem;
+
+        }
+
+        .spacer {
+            height: var(--timeHeight);
+        }
+
+        /* Style for the current time and date display */
+        #current-datetime {
+            text-align: center;
+            padding: 10px;
+            font-size: 1.2rem;
+            background-color: #eee; /* Light gray background */
+            margin-bottom: 10px;
+        }
+
+        /* Style to highlight the current hour */
+        .current-hour {
+            background-color: var(--currentTimeColor);
+            height: var(--timeHeight); /* Make the highlight span the whole hour */
+        }
+
+        /* Style for the time display below the current hour line */
+        .current-time-marker {
+            position: absolute;
+            top: calc(var(--current-hour-top) + var(--timeHeight) / 2 - 0.5em); /* Position below the hour line */
+            /* top: var(--current-hour-top); *//* Position below the hour line */
+            left: 0;
+            width: 100%;
+            text-align: center;
+            font-size: 0.8rem;
+            color: var(--currentTimeTextColor);
+            font-weight: bold;
+            z-index: 2; /* Ensure it's above the hour lines */
+            pointer-events: none; /* Avoid interfering with clicks on other elements */
+        }
+    </style>
+</head>
+<body>
+
+<div id="current-datetime"></div>
+
+<div class="calendar" id="calendar">
+    <div class="timeline" id="timeline"></div>
+    <div class="days" id="daysContainer"></div>
+</div>
+
+<script type="module">
+    import ICAL from "https://cdn.jsdelivr.net/npm/ical.js@2.1.0/dist/ical.min.js";
+
+    const daysContainer = document.getElementById('daysContainer');
+    const timeline = document.getElementById('timeline');
+    const currentDateTimeDiv = document.getElementById('current-datetime');
+
+    const startDate = new Date();
+    const numDays = 15;
+    const startHourOfDay = 6;
+    const endHourOfDay = 22;
+    const icsUrl = 'schedule.ics';
+
+    // Function to update the current time and date
+    function updateCurrentDateTime() {
+        const now = new Date();
+
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0'); // Months are 0-indexed
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+
+        const dateTimeString = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        currentDateTimeDiv.textContent = `${dateTimeString}`;
+    }
+
+    // Update the time and date every second
+    setInterval(updateCurrentDateTime, 1000);
+
+    // Initial update
+    updateCurrentDateTime();
+
+    async function getICSEvents(rangeStart, rangeEnd) {
+        const response = await fetch(icsUrl);
+        if (!response.ok) {
+            console.error("Error fetching ICS:", response.status, response.statusText);
+            return [];
+        }
+
+        const icsText = await response.text();
+        const jcalData = ICAL.parse(icsText);
+        const vcalendar = new ICAL.Component(jcalData);
+        const vevents = vcalendar.getAllSubcomponents('vevent');
+
+        const events = [];
+
+        vevents.forEach(vevent => {
+            const event = new ICAL.Event(vevent);
+            // Handle recurring events:
+            const iterator = event.iterator();
+
+            for (let next = iterator.next(); next && next.compare(rangeEnd) < 0; next = iterator.next()) {
+                if (next.compare(rangeStart) >= 0) {
+                    events.push({
+                        startTime: next.toString(),
+                        endTime: event.endDate.toString(),
+                        title: event.summary,
+                        location: event.location,
+                        booked: vevent.getFirstPropertyValue('status').toUpperCase() === "CONFIRMED" ? true : false,
+                    });
+                } else if (next.compare(rangeEnd) >= 0) {
+                    break; // Exit loop once we are past the range end
+                }
+            }
+
+        });
+        //console.log(events);
+        return events;
+    }
+
+    async function renderCalendar() {
+        const now = new Date();
+        const date = new Date(startDate);
+        const rangeEnd = new Date(startDate);
+        rangeEnd.setDate(startDate.getDate() + numDays);
+        startDate.setHours(0, 0, 0, 0);
+        rangeEnd.setHours(0, 0, 0, 0);
+        const eventData = await getICSEvents(ICAL.Time.fromJSDate(startDate), ICAL.Time.fromJSDate(rangeEnd));
+
+        for (let i = 0; i < numDays; i++) {
+            const dayDiv = document.createElement('div');
+            dayDiv.classList.add('day');
+
+            const dateDiv = document.createElement('div');
+            dateDiv.classList.add('date');
+            dateDiv.innerHTML = `<p class="date-num">${date.getDate()}</p><p class="date-day">${date.toLocaleString('en-US', { weekday: 'short' })}</p>`;
+            dayDiv.appendChild(dateDiv);
+
+            const eventsDiv = document.createElement('div');
+            eventsDiv.classList.add('events');
+            let currentHourTop = null;
+
+            // Add the hour lines and highlight the current hour
+            for (let j = 0; j <= (endHourOfDay -1 - startHourOfDay); j++) {
+                const hourLine = document.createElement('div');
+                hourLine.classList.add('hour-line');
+                hourLine.style.top = (j * 60) + 'px';
+
+                // Highlight the current hour and store its top position
+                if (date.getDate() === now.getDate() && j + startHourOfDay === now.getHours()) {
+                    hourLine.classList.add('current-hour');
+                    currentHourTop = j * 60;
+                }
+
+                eventsDiv.appendChild(hourLine);
+            }
+
+            // Display the current time below the current hour line
+            if (date.getDate() === now.getDate() && currentHourTop !== null) {
+                const currentTimeMarker = document.createElement('div');
+                currentTimeMarker.classList.add('current-time-marker');
+                currentTimeMarker.textContent = `${now.getHours()}:00 - ${now.getHours() + 1}:00`;
+
+                // Set CSS variable to position the time marker correctly
+                eventsDiv.style.setProperty('--current-hour-top', `${currentHourTop}px`);
+
+                eventsDiv.appendChild(currentTimeMarker);
+            }
+
+            dayDiv.appendChild(eventsDiv);
+            //const dateString = date.toISOString().split('T')[0]; // YYYY-MM-DD
+            eventData.filter(event => {
+                const eventDate = new Date(event.startTime);
+                return eventDate.getDate() === date.getDate() &&
+                    eventDate.getMonth() === date.getMonth() &&
+                    eventDate.getFullYear() === date.getFullYear();
+            }).forEach(event => {
+                const eventDiv = document.createElement('div');
+                eventDiv.classList.add('event');
+
+                const startTimeUTC = new Date(event.startTime);
+                const endTimeUTC = new Date(event.endTime);
+
+                // Calculate start and end times in minutes from midnight
+                const startMinutes = startTimeUTC.getHours() * 60 + startTimeUTC.getMinutes();
+                const endMinutes = endTimeUTC.getHours() * 60 + endTimeUTC.getMinutes();
+
+                const startHourOfDayMinutes = startHourOfDay * 60;
+                const endHourOfDayMinutes = endHourOfDay * 60;
+
+                const top = Math.max(0, startMinutes - startHourOfDayMinutes); // Calculate top based on minutes
+                let height = endMinutes - startMinutes; // Calculate height based on minutes
+
+                // Adjust for events starting before or ending after the visible hours
+                if (startMinutes < startHourOfDayMinutes) {
+                    height = Math.max(0, endMinutes - startHourOfDayMinutes);  // Correct height if starts before displayed hours.
+                }
+                if (endMinutes > endHourOfDayMinutes) {
+                    height = endHourOfDayMinutes - Math.max(startHourOfDayMinutes, startMinutes)  // Correct height if ends after displayed hours
+                }
+
+                // Skip events entirely outside the visible hours
+                if (endMinutes <= startHourOfDayMinutes || startMinutes >= endHourOfDayMinutes) {
+                    return;
+                }
+
+                eventDiv.style.top = top + "px";
+                eventDiv.style.height = height + "px";
+                const startTimeString = startTimeUTC.toLocaleTimeString([], {hour12: false, hour: '2-digit', minute: '2-digit'});
+                const endTimeString = endTimeUTC.toLocaleTimeString([], {hour12: false, hour: '2-digit', minute: '2-digit'});
+
+                // Format the event text
+                let eventText = `<p class="event-time">${startTimeString} - ${endTimeString}`;
+                if (event.location) {
+                    eventText += ` in <strong>${event.location}</strong>`;
+                }
+                eventText += `</p>`;
+                eventText += `<p class="event-title">${event.title}</p>`;
+                if (event.booked === false) {
+                    eventDiv.style.background = 'var(--eventColorTentative)';
+                }
+                // Check if the event is current
+
+                const eventStart = new Date(event.startTime);
+                const eventEnd = new Date(event.endTime);
+                if (now >= eventStart && now <= eventEnd) {
+                    eventDiv.classList.add("current");
+                }
+
+                eventDiv.innerHTML = eventText;
+                // Create the hover box element
+                const hoverBox = document.createElement('div');
+                hoverBox.classList.add('hover-box');
+
+
+                // Add content to the hover box (you can customize this)
+                hoverBox.innerHTML = `
+              <p><strong>${event.title}</strong></p>
+              <p>${startTimeString} - ${endTimeString}</p>
+              <p>Location: ${event.location || 'N/A'}</p>
+              ${event.booked === false ? '<p style="color:orange;">Planned</p>' : '<p style="color:green;">Confirmed</p>'}
+          `;
+                eventDiv.appendChild(hoverBox);
+                eventsDiv.appendChild(eventDiv);
+            });
+
+            daysContainer.appendChild(dayDiv);
+            date.setDate(date.getDate() + 1);
+        }
+    }
+    renderCalendar();
+</script>
+</body>
+</html>

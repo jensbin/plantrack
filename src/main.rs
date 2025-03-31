@@ -131,6 +131,9 @@ enum Commands {
         /// Date for the listing in YYYY-MM-DD format. Defaults to today.
         #[arg(long)]
         date: Option<String>,
+        /// Show a summary of projects and their total time.
+        #[arg(short, long)]
+        summary: bool,
     },
     /// Generate a report for a specific project.
     Report {
@@ -787,7 +790,7 @@ fn format_duration(duration: Duration, human: bool) -> String {
     }
 }
 
-fn list_events(events: &[ScheduleEvent],past_days: u32, future_days: u32, date_str: Option<String>, timezone: &Tz) {
+fn list_events(events: &[ScheduleEvent],past_days: u32, future_days: u32, date_str: Option<String>, timezone: &Tz, summary: bool) {
     if events.is_empty() {
         println!("{}", "No events found".yellow());
         return;
@@ -826,6 +829,30 @@ fn list_events(events: &[ScheduleEvent],past_days: u32, future_days: u32, date_s
     print_events_grouped_by_day(events, timezone, past_days, date_str.clone(), true);
     print_events_grouped_by_day(events, timezone, future_days, date_str, false);
     // print_events_grouped_by_day(&filtered_events, timezone);
+    if summary {
+        let start_date = now - Duration::days(past_days as i64);
+        let end_date = now + Duration::days(future_days as i64);
+
+        let events_in_range: Vec<&ScheduleEvent> = events
+            .iter()
+            .filter(|event| {
+                event.start_time >= start_date.with_timezone(&Utc) && event.end_time <= end_date.with_timezone(&Utc)
+            })
+            .collect();
+        
+        let mut project_summary: HashMap<String, Duration> = HashMap::new();
+
+        for event in events_in_range {
+            let (project, _) = event.summary.split_once(':').unwrap_or(("", &event.summary));
+            let duration = event.end_time - event.start_time;
+            *project_summary.entry(project.to_string()).or_insert(Duration::zero()) += duration;
+        }
+
+        println!("\n{}", "Summary:".bright_yellow().bold());
+        for (project, duration) in project_summary {
+            println!("  {}: {}", project.bright_blue(), format_duration(duration, true));
+        }
+    }
 }
 
 fn generate_report(events: &[ScheduleEvent], project: &str, timezone: &Tz, month: Option<u32>, year: Option<i32>, target_time: Option<f64>) {
@@ -1300,7 +1327,7 @@ fn main() -> Result<(), Error> {
                 println!("{}", "Todo not added".yellow());
             }
         }
-        Commands::List { past_days, future_days, date } => list_events(&events, past_days, future_days, date, &timezone),
+        Commands::List { past_days, future_days, date, summary } => list_events(&events, past_days, future_days, date, &timezone, summary),
         // Commands::List { days } => list_events(&events, days),
         Commands::Delete { id, timespan } => {
             if delete_event(&mut events, &id, timespan, rounding, &timezone)? {
